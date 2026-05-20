@@ -10,6 +10,7 @@ import os
 from flask import Flask, render_template, request, url_for
 from werkzeug.utils import secure_filename
 import model_utils
+import traceback
 
 BASE_DIR = Path(__file__).resolve().parent
 # allow overriding model path via env for deployment flexibility
@@ -131,6 +132,7 @@ def home():
     audio_filename = None
     audio_url = None
     view_requested = False
+    last_traceback = None
 
     if request.method == "POST":
         try:
@@ -190,7 +192,8 @@ def home():
                                     error = f"Model prediction failed: {exc}"
         except Exception as exc:
             app.logger.exception('Unexpected error in upload/process workflow')
-            error = "An unexpected server error occurred. Please try again with a valid WAV recording."
+            last_traceback = traceback.format_exc()
+            error = f"Unexpected server error: {exc}"
 
     return render_template(
         "index.html",
@@ -204,6 +207,7 @@ def home():
         model_expected_preview=model_expected_preview,
         model_class_labels=model_class_labels,
         view_requested=view_requested,
+        last_traceback=last_traceback,
     )
 
 

@@ -109,7 +109,7 @@
 </head>
 <body>
     <header>
-        <h1>Arduino Based Respirator Stethoscope</h1>
+        <h1>Arduino Based Respiratory Stethoscope</h1>
     </header>
     <main>
         <p>Arduino dashboard mode shows recorded audio and lets you process it when ready.</p>
@@ -173,6 +173,12 @@
 
         {% if error %}
             <div class="error">{{ error }}</div>
+        {% endif %}
+        {% if last_traceback %}
+            <section class="card">
+                <h2>Server Traceback</h2>
+                <pre style="white-space:pre-wrap; color:#ffeeee; background:rgba(0,0,0,0.2); padding:10px; border-radius:8px;">{{ last_traceback }}</pre>
+            </section>
         {% endif %}
     </main>
 </body>
