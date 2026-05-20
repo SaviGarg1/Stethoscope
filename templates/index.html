@@ -45,14 +45,40 @@
             font-size: 1.6rem;
         }
 
-        form {
+        .dashboard {
             margin-top: 100px;
+            display: grid;
+            gap: 24px;
+            width: 100%;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            text-align: left;
+        }
+
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+        }
+
+        form {
             display: grid;
             gap: 16px;
         }
 
         input[type="file"] {
             color: #fff;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.08);
         }
 
         button {
@@ -86,15 +112,47 @@
         <h1>Arduino Based Respirator Stethoscope</h1>
     </header>
     <main>
-        <p>Upload a .wav lung sound file and get a single diagnosis result.</p>
+        <p>Arduino dashboard mode shows recorded audio and lets you process it when ready.</p>
 
-        <form method="post" enctype="multipart/form-data">
-            <input type="file" name="audio_file" accept=".wav" required>
-            <button type="submit">Submit</button>
-        </form>
+        <section class="card">
+            <h2>Model Status</h2>
+            {% if model_ready %}
+                <p>The classifier is loaded and ready.</p>
+                <p>Expected features: <strong>{{ model_expected_feature_count }}</strong></p>
+                <p>Sample input preview: <strong>{{ model_expected_preview | join(', ') }}</strong></p>
+                {% if model_class_labels %}
+                    <p>Possible labels: <strong>{{ model_class_labels | join(', ') }}</strong></p>
+                {% endif %}
+            {% else %}
+                <p style="color: #ffcc00;">Model is unavailable. Check server logs.</p>
+                {% if model_load_error %}
+                    <p style="font-size:0.9rem; color:#ffdddd;">Error: {{ model_load_error }}</p>
+                {% endif %}
+            {% endif %}
+        </section>
+
+        <section class="card">
+            <h2>Record Preview</h2>
+            <p>Upload a recorded .wav file from your stethoscope or Arduino audio source.</p>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="audio_file" accept=".wav" required>
+                <button type="submit">Upload</button>
+            </form>
+        </section>
+
+        {% if audio_url %}
+            <section class="card">
+                <h2>Recorded Audio</h2>
+                <audio controls src="{{ audio_url }}"></audio>
+                <form method="post">
+                    <input type="hidden" name="process_file" value="{{ audio_filename }}">
+                    <button type="submit">Process</button>
+                </form>
+            </section>
+        {% endif %}
 
         {% if result %}
-            <div class="result">Prediction: <strong>{{ result }}</strong></div>
+            <div class="result">Diagnosis: <strong>{{ result }}</strong></div>
         {% endif %}
 
         {% if error %}

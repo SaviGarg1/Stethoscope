@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import wave
 import os
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, url_for
 from werkzeug.utils import secure_filename
 import model_utils
 
@@ -26,16 +26,26 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH", 16 *
 app.secret_key = os.environ.get("SECRET_KEY", "replace-with-a-secure-key")
 
 # load model (path can be overridden via MODEL_PATH env var)
-model = joblib.load(MODEL_PATH)
+model = None
+model_ready = False
+model_load_error = None
+numeric_cols = []
+cat_cols = []
+model_class_labels = []
+model_expected_feature_count = 0
+model_expected_preview = []
 
-# infer pipeline expected columns
 try:
+    model = joblib.load(MODEL_PATH)
     preproc = model.named_steps["preproc"]
     numeric_cols = preproc.transformers[0][2]
     cat_cols = preproc.transformers[1][2]
-except Exception:
-    numeric_cols = []
-    cat_cols = []
+    model_ready = True
+    model_class_labels = model.named_steps["rf"].classes_.tolist()
+    model_expected_feature_count = len(numeric_cols) + len(cat_cols)
+    model_expected_preview = numeric_cols[:6] + cat_cols
+except Exception as exc:
+    model_load_error = str(exc)
 
 
 def allowed_file(filename):
@@ -118,48 +128,65 @@ def validate_wav(path, min_duration=0.5, min_size=200):
 def home():
     result = None
     error = None
+    audio_filename = None
+    audio_url = None
 
     if request.method == "POST":
-        if "audio_file" not in request.files:
-            error = "No audio file part in the request."
-        else:
-            file = request.files["audio_file"]
-            if file.filename == "":
-                error = "Please select a .wav file to upload."
-            elif not allowed_file(file.filename):
-                error = "Only .wav files are allowed."
-            else:
-                filename = secure_filename(file.filename)
-                save_path = UPLOAD_FOLDER / filename
-                file.save(save_path)
+        try:
+            if "audio_file" in request.files and request.files["audio_file"].filename != "":
+                file = request.files["audio_file"]
+                if not allowed_file(file.filename):
+                    error = "Only .wav files are allowed."
+                else:
+                    filename = secure_filename(file.filename)
+                    save_path = UPLOAD_FOLDER / filename
+                    file.save(save_path)
 
-                try:
-                    # quick sanity check: avoid processing empty or corrupt uploads
                     valid, msg = validate_wav(save_path)
                     if not valid:
                         error = msg or "Uploaded file failed validation."
-                        features = None
-                    else:
-                        features = extract_features_from_audio(str(save_path))
-
-                    if features is None:
-                        error = error or "Unable to process the uploaded audio file."
-                    else:
-                        # prepare DataFrame matching pipeline expectations
-                        df = model_utils.prepare_input(features, numeric_cols, cat_cols)
-                        prediction = model.predict(df)[0]
-                        result = prediction
-                except Exception as exc:
-                    app.logger.exception('Prediction error')
-                    # concise message to user, full traceback is logged
-                    error = f"Failed to generate prediction: {str(exc)}"
-                finally:
-                    try:
                         save_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    else:
+                        audio_filename = filename
+                        audio_url = url_for("static", filename=f"uploads/{audio_filename}")
 
-    return render_template("index.html", result=result, error=error)
+            elif request.form.get("process_file"):
+                if not model_ready:
+                    error = "The model is not available right now. Please try again later."
+                else:
+                    audio_filename = secure_filename(request.form.get("process_file"))
+                    save_path = UPLOAD_FOLDER / audio_filename
+                    if not save_path.exists():
+                        error = "The selected recording could not be found. Please upload again."
+                    else:
+                        audio_url = url_for("static", filename=f"uploads/{audio_filename}")
+                        valid, msg = validate_wav(save_path)
+                        if not valid:
+                            error = msg or "Uploaded file failed validation."
+                        else:
+                            features = extract_features_from_audio(str(save_path))
+                            if features is None:
+                                error = "Unable to process the uploaded audio file."
+                            else:
+                                df = model_utils.prepare_input(features, numeric_cols, cat_cols)
+                                prediction = model.predict(df)[0]
+                                result = prediction
+        except Exception as exc:
+            app.logger.exception('Unexpected error in upload/process workflow')
+            error = "An unexpected server error occurred. Please try again with a valid WAV recording."
+
+    return render_template(
+        "index.html",
+        result=result,
+        error=error,
+        audio_url=audio_url,
+        audio_filename=audio_filename,
+        model_ready=model_ready,
+        model_load_error=model_load_error,
+        model_expected_feature_count=model_expected_feature_count,
+        model_expected_preview=model_expected_preview,
+        model_class_labels=model_class_labels,
+    )
 
 
 if __name__ == "__main__":
