@@ -5,11 +5,15 @@ import joblib
 import librosa
 import numpy as np
 import pandas as pd
+import wave
+import os
 from flask import Flask, render_template, request
 from werkzeug.utils import secure_filename
+import model_utils
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "rf_sound_demographics_pipeline.joblib"
+# allow overriding model path via env for deployment flexibility
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", str(BASE_DIR / "rf_sound_demographics_pipeline.joblib")))
 UPLOAD_FOLDER = BASE_DIR / "static" / "uploads"
 ALLOWED_EXTENSIONS = {"wav"}
 
@@ -17,10 +21,21 @@ UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
-app.secret_key = "replace-with-a-secure-key"
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH", 16 * 1024 * 1024))
+# read secret from env with safe default for local dev
+app.secret_key = os.environ.get("SECRET_KEY", "replace-with-a-secure-key")
 
+# load model (path can be overridden via MODEL_PATH env var)
 model = joblib.load(MODEL_PATH)
+
+# infer pipeline expected columns
+try:
+    preproc = model.named_steps["preproc"]
+    numeric_cols = preproc.transformers[0][2]
+    cat_cols = preproc.transformers[1][2]
+except Exception:
+    numeric_cols = []
+    cat_cols = []
 
 
 def allowed_file(filename):
@@ -69,6 +84,36 @@ def extract_features_from_audio(path, n_mfcc=13):
     return feats
 
 
+def validate_wav(path, min_duration=0.5, min_size=200):
+    """Quickly validate that the file is a WAV and has a minimum duration and size."""
+    try:
+        path = str(path)
+        # check file size first
+        size = Path(path).stat().st_size
+        if size < min_size:
+            return False, "Uploaded file is too small to be a valid audio file."
+        try:
+            with wave.open(path, 'rb') as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                duration = frames / float(rate) if rate else 0.0
+        except wave.Error:
+            # fallback: some WAVs (e.g., non-PCM) may not be readable by wave; use librosa to get duration
+            try:
+                y, sr = librosa.load(str(path), sr=None)
+                duration = len(y) / float(sr) if sr else 0.0
+            except Exception:
+                return False, "Uploaded file is not a valid WAV file."
+
+        if duration < min_duration:
+            return False, f"Uploaded audio is too short ({duration:.2f}s). Minimum is {min_duration}s."
+    except wave.Error:
+        return False, "Uploaded file is not a valid WAV file."
+    except Exception as exc:
+        return False, f"Cannot validate audio file: {exc}"
+    return True, None
+
+
 @app.route("/", methods=["GET", "POST"])
 def home():
     result = None
@@ -89,15 +134,25 @@ def home():
                 file.save(save_path)
 
                 try:
-                    features = extract_features_from_audio(str(save_path))
-                    if features is None:
-                        error = "Unable to process the uploaded audio file."
+                    # quick sanity check: avoid processing empty or corrupt uploads
+                    valid, msg = validate_wav(save_path)
+                    if not valid:
+                        error = msg or "Uploaded file failed validation."
+                        features = None
                     else:
-                        df = pd.DataFrame([features])
+                        features = extract_features_from_audio(str(save_path))
+
+                    if features is None:
+                        error = error or "Unable to process the uploaded audio file."
+                    else:
+                        # prepare DataFrame matching pipeline expectations
+                        df = model_utils.prepare_input(features, numeric_cols, cat_cols)
                         prediction = model.predict(df)[0]
                         result = prediction
-                except Exception:
-                    error = "Failed to generate prediction from the uploaded file."
+                except Exception as exc:
+                    app.logger.exception('Prediction error')
+                    # concise message to user, full traceback is logged
+                    error = f"Failed to generate prediction: {str(exc)}"
                 finally:
                     try:
                         save_path.unlink(missing_ok=True)
