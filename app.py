@@ -181,9 +181,13 @@ def home():
                             if features is None:
                                 error = "Unable to process the uploaded audio file."
                             else:
-                                df = model_utils.prepare_input(features, numeric_cols, cat_cols)
-                                prediction = model.predict(df)[0]
-                                result = prediction
+                                try:
+                                    df = model_utils.prepare_input(features, numeric_cols, cat_cols)
+                                    prediction = model.predict(df)[0]
+                                    result = prediction
+                                except Exception as exc:
+                                    app.logger.exception('Model prediction failed')
+                                    error = f"Model prediction failed: {exc}"
         except Exception as exc:
             app.logger.exception('Unexpected error in upload/process workflow')
             error = "An unexpected server error occurred. Please try again with a valid WAV recording."
