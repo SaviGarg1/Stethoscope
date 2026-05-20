@@ -140,13 +140,29 @@
             </form>
         </section>
 
+        {% if audio_filename and not audio_url %}
+            <section class="card">
+                <h2>Audio Uploaded</h2>
+                <p>Your audio has been uploaded. Click below to view and listen to it before processing.</p>
+                <form method="post">
+                    <input type="hidden" name="view_file" value="{{ audio_filename }}">
+                    <button type="submit">View my audio</button>
+                </form>
+            </section>
+        {% elif not audio_filename %}
+            <section class="card">
+                <h2>No Audio Provided</h2>
+                <p>No audio has been uploaded yet. Please upload a .wav file first.</p>
+            </section>
+        {% endif %}
+
         {% if audio_url %}
             <section class="card">
                 <h2>Recorded Audio</h2>
                 <audio controls src="{{ audio_url }}"></audio>
                 <form method="post">
                     <input type="hidden" name="process_file" value="{{ audio_filename }}">
-                    <button type="submit">Process</button>
+                    <button type="submit">Process my audio</button>
                 </form>
             </section>
         {% endif %}

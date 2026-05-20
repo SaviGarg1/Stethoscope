@@ -130,6 +130,7 @@ def home():
     error = None
     audio_filename = None
     audio_url = None
+    view_requested = False
 
     if request.method == "POST":
         try:
@@ -148,7 +149,19 @@ def home():
                         save_path.unlink(missing_ok=True)
                     else:
                         audio_filename = filename
+
+            elif request.form.get("view_file"):
+                audio_filename = secure_filename(request.form.get("view_file"))
+                save_path = UPLOAD_FOLDER / audio_filename
+                if not save_path.exists():
+                    error = "The selected recording could not be found. Please upload again."
+                else:
+                    valid, msg = validate_wav(save_path)
+                    if not valid:
+                        error = msg or "Uploaded file failed validation."
+                    else:
                         audio_url = url_for("static", filename=f"uploads/{audio_filename}")
+                        view_requested = True
 
             elif request.form.get("process_file"):
                 if not model_ready:
@@ -186,6 +199,7 @@ def home():
         model_expected_feature_count=model_expected_feature_count,
         model_expected_preview=model_expected_preview,
         model_class_labels=model_class_labels,
+        view_requested=view_requested,
     )
 
 
