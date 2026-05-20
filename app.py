@@ -11,6 +11,10 @@ from flask import Flask, render_template, request, url_for
 from werkzeug.utils import secure_filename
 import model_utils
 import traceback
+from flask import jsonify
+import threading
+import json
+import time
 
 BASE_DIR = Path(__file__).resolve().parent
 # allow overriding model path via env for deployment flexibility
@@ -19,6 +23,11 @@ UPLOAD_FOLDER = BASE_DIR / "static" / "uploads"
 ALLOWED_EXTENSIONS = {"wav"}
 
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+STATUS_DIR = BASE_DIR / 'statuses'
+STATUS_DIR.mkdir(parents=True, exist_ok=True)
+
+statuses = {}
+arduino_state = {"status": "idle", "filename": None, "message": None, "result": None}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
@@ -125,7 +134,109 @@ def validate_wav(path, min_duration=0.5, min_size=200):
     return True, None
 
 
-@app.route("/", methods=["GET", "POST"])
+
+def write_status_file(filename, data):
+    try:
+        p = STATUS_DIR / f"{filename}.json"
+        with open(p, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+    except Exception:
+        app.logger.exception('Failed writing status file')
+
+
+def process_file_background(filename: str):
+    try:
+        statuses[filename] = {"status": "processing"}
+        write_status_file(filename, statuses[filename])
+        save_path = UPLOAD_FOLDER / filename
+        if not save_path.exists():
+            statuses[filename] = {"status": "error", "message": "File not found"}
+            write_status_file(filename, statuses[filename])
+            return
+
+        valid, msg = validate_wav(save_path)
+        if not valid:
+            statuses[filename] = {"status": "error", "message": msg}
+            write_status_file(filename, statuses[filename])
+            return
+
+        features = extract_features_from_audio(str(save_path))
+        if features is None:
+            statuses[filename] = {"status": "error", "message": "Feature extraction failed"}
+            write_status_file(filename, statuses[filename])
+            return
+
+        df = model_utils.prepare_input(features, numeric_cols, cat_cols)
+        try:
+            prediction = model.predict(df)[0]
+            statuses[filename] = {"status": "done", "result": str(prediction)}
+            write_status_file(filename, statuses[filename])
+            if arduino_state['filename'] == filename:
+                arduino_state.update({"status": "done", "result": str(prediction), "message": None})
+        except Exception as exc:
+            app.logger.exception('Model prediction failed in background')
+            tb = traceback.format_exc()
+            statuses[filename] = {"status": "error", "message": f"Model prediction failed: {exc}", "traceback": tb}
+            write_status_file(filename, statuses[filename])
+            if arduino_state['filename'] == filename:
+                arduino_state.update({"status": "error", "message": str(exc)})
+    except Exception:
+        app.logger.exception('Unexpected error in background processing')
+        tb = traceback.format_exc()
+        statuses[filename] = {"status": "error", "message": "Unexpected background error", "traceback": tb}
+        write_status_file(filename, statuses[filename])
+        if arduino_state['filename'] == filename:
+            arduino_state.update({"status": "error", "message": "Unexpected background error"})
+
+
+@app.route('/arduino/upload', methods=['POST'])
+def arduino_upload():
+    if 'audio_file' not in request.files:
+        return jsonify({'error': 'Missing audio_file field'}), 400
+    file = request.files['audio_file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Only .wav files are allowed'}), 400
+
+    filename = secure_filename(file.filename)
+    save_path = UPLOAD_FOLDER / filename
+    file.save(save_path)
+    valid, msg = validate_wav(save_path)
+    if not valid:
+        save_path.unlink(missing_ok=True)
+        return jsonify({'error': msg or 'Uploaded file failed validation'}), 400
+
+    arduino_state.update({"status": "uploaded", "filename": filename, "message": "File received from Arduino.", "result": None})
+    statuses[filename] = {"status": "queued"}
+    write_status_file(filename, statuses[filename])
+    threading.Thread(target=process_file_background, args=(filename,), daemon=True).start()
+    return jsonify({'status': 'uploaded', 'filename': filename})
+
+
+@app.route('/arduino/status')
+def arduino_status():
+    return jsonify(arduino_state)
+
+
+@app.route('/arduino/report', methods=['POST'])
+def arduino_report():
+    data = request.get_json(silent=True) or {}
+    filename = secure_filename(data.get('filename', 'mic.wav'))
+    status_value = data.get('status')
+    message = data.get('message')
+    result = data.get('result')
+    if status_value:
+        arduino_state['status'] = status_value
+    if message is not None:
+        arduino_state['message'] = message
+    if result is not None:
+        arduino_state['result'] = result
+    arduino_state['filename'] = filename
+    return jsonify(arduino_state)
+
+
+@app.route('/', methods=['GET', 'POST'])
 def home():
     result = None
     error = None
@@ -151,6 +262,14 @@ def home():
                         save_path.unlink(missing_ok=True)
                     else:
                         audio_filename = filename
+                        # start background processing for this file
+                        try:
+                            statuses[audio_filename] = {"status": "queued"}
+                            t = threading.Thread(target=process_file_background, args=(audio_filename,), daemon=True)
+                            t.start()
+                        except Exception:
+                            app.logger.exception('Failed to start background processing thread')
+                            statuses[audio_filename] = {"status": "error", "message": "Failed to start background worker"}
 
             elif request.form.get("view_file"):
                 audio_filename = secure_filename(request.form.get("view_file"))
@@ -208,8 +327,27 @@ def home():
         model_class_labels=model_class_labels,
         view_requested=view_requested,
         last_traceback=last_traceback,
+        arduino_state=arduino_state,
     )
 
+
+@app.route('/status')
+def status():
+    filename = request.args.get('file')
+    if not filename:
+        return jsonify({"error": "missing file parameter"}), 400
+    filename = secure_filename(filename)
+    if filename in statuses:
+        return jsonify(statuses[filename])
+    p = STATUS_DIR / f"{filename}.json"
+    if p.exists():
+        try:
+            with open(p, 'r', encoding='utf-8') as fh:
+                return jsonify(json.load(fh))
+        except Exception:
+            app.logger.exception('Failed to read status file')
+            return jsonify({"error": "failed to read status"}), 500
+    return jsonify({"status": "unknown"}), 404
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")

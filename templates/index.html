@@ -131,6 +131,22 @@
             {% endif %}
         </section>
 
+        {% if arduino_state and arduino_state.status != 'idle' %}
+            <section class="card">
+                <h2>Arduino Status</h2>
+                <p>Status: <strong>{{ arduino_state.status }}</strong></p>
+                {% if arduino_state.filename %}
+                    <p>File: <strong>{{ arduino_state.filename }}</strong></p>
+                {% endif %}
+                {% if arduino_state.message %}
+                    <p>{{ arduino_state.message }}</p>
+                {% endif %}
+                {% if arduino_state.result %}
+                    <p>Diagnosis: <strong>{{ arduino_state.result }}</strong></p>
+                {% endif %}
+            </section>
+        {% endif %}
+
         <section class="card">
             <h2>Record Preview</h2>
             <p>Upload a recorded .wav file from your stethoscope or Arduino audio source.</p>
@@ -143,11 +159,32 @@
         {% if audio_filename and not audio_url %}
             <section class="card">
                 <h2>Audio Uploaded</h2>
-                <p>Your audio has been uploaded. Click below to view and listen to it before processing.</p>
-                <form method="post">
-                    <input type="hidden" name="view_file" value="{{ audio_filename }}">
-                    <button type="submit">View my audio</button>
-                </form>
+                <p>Your audio has been uploaded. The server has started processing it automatically.</p>
+                <div id="status-{{ audio_filename }}">Queued...</div>
+                <p style="margin-top:10px;">You can also <form style="display:inline; margin:0;" method="post"><input type="hidden" name="view_file" value="{{ audio_filename }}"><button type="submit">View my audio</button></form></p>
+                <script>
+                    (function(){
+                        const filename = "{{ audio_filename }}";
+                        const statusEl = document.getElementById('status-{{ audio_filename }}');
+                        function update(){
+                            fetch('/status?file='+encodeURIComponent(filename)).then(r=>r.json()).then(j=>{
+                                if(j.status==='processing' || j.status==='queued'){
+                                    statusEl.textContent = 'Processing...';
+                                } else if(j.status==='done'){
+                                    statusEl.innerHTML = 'Diagnosis: <strong>'+ (j.result || '') +'</strong>';
+                                    clearInterval(iv);
+                                } else if(j.status==='error'){
+                                    statusEl.textContent = 'Error: ' + (j.message || 'unknown');
+                                    clearInterval(iv);
+                                } else {
+                                    statusEl.textContent = 'Status: ' + (j.status || 'unknown');
+                                }
+                            }).catch(e=>{ statusEl.textContent = 'Status fetch failed'; clearInterval(iv); });
+                        }
+                        const iv = setInterval(update, 2000);
+                        update();
+                    })();
+                </script>
             </section>
         {% elif not audio_filename %}
             <section class="card">

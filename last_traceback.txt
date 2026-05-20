@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "C:\Users\SAVVY\OneDrive - Fulton County Schools\Desktop\SF2025\app.py", line 188, in home
+    prediction = model.predict(df)[0]
+                 ^^^^^^^^^^^^^^^^^
+  File "<string>", line 20, in predict
+RuntimeError: simulated prediction failure
