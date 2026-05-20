@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+audio_and_txt_files/
+segmented_files/
+data/
+audio/
+uploads/
